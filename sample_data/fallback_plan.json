@@ -1,0 +1,34 @@
+{
+  "destination": "Kyoto (demo data)",
+  "summary": "Offline demo itinerary. This is NOT based on live search — no sources, prices or opening hours here are verified.",
+  "days": [
+    {
+      "day": 1,
+      "theme": "Shrines and old streets",
+      "activities": [
+        {"time": "09:00", "place": "Fushimi Inari Taisha", "description": "Walk the torii gate trail early before crowds.", "duration_minutes": 120, "estimated_cost": null, "cost_verified": false, "opening_hours": null, "source_url": null, "unverified": true},
+        {"time": "12:00", "place": "Nishiki Market", "description": "Graze on local street food for lunch.", "duration_minutes": 90, "estimated_cost": 2500, "cost_verified": false, "opening_hours": null, "source_url": null, "unverified": true},
+        {"time": "15:00", "place": "Kiyomizu-dera", "description": "Hillside temple with city views.", "duration_minutes": 90, "estimated_cost": null, "cost_verified": false, "opening_hours": null, "source_url": null, "unverified": true},
+        {"time": "18:00", "place": "Gion", "description": "Evening walk and dinner in the historic district.", "duration_minutes": 120, "estimated_cost": 5000, "cost_verified": false, "opening_hours": null, "source_url": null, "unverified": true}
+      ]
+    },
+    {
+      "day": 2,
+      "theme": "Arashiyama and the north-west",
+      "activities": [
+        {"time": "09:00", "place": "Arashiyama Bamboo Grove", "description": "Quiet morning walk through the bamboo.", "duration_minutes": 60, "estimated_cost": null, "cost_verified": false, "opening_hours": null, "source_url": null, "unverified": true},
+        {"time": "12:00", "place": "Lunch in Arashiyama", "description": "Local set lunch near the river.", "duration_minutes": 60, "estimated_cost": 2000, "cost_verified": false, "opening_hours": null, "source_url": null, "unverified": true},
+        {"time": "14:00", "place": "Kinkaku-ji", "description": "The Golden Pavilion.", "duration_minutes": 75, "estimated_cost": null, "cost_verified": false, "opening_hours": null, "source_url": null, "unverified": true}
+      ]
+    }
+  ],
+  "budget": {
+    "currency": "JPY",
+    "estimated_total": 9500,
+    "breakdown": [{"category": "Food", "amount": 9500}],
+    "notes": "Demo estimate only. Admission fees and transport are not included because they are unverified."
+  },
+  "tips": ["Run with valid API keys to get a live, source-backed plan."],
+  "unverified_notes": ["Everything in this demo plan is unverified."],
+  "verification": {"activities": 7, "grounded": 0, "removed_sources": 0, "unverified": 7}
+}
