@@ -2,6 +2,10 @@
 
 import base64
 import json
+import os
+import subprocess
+import sys
+import tempfile
 from html import escape
 from pathlib import Path
 from urllib.parse import urlparse
@@ -11,6 +15,8 @@ from PIL import Image
 
 from agent import edit_plan, maps_url, plan_trip, to_mymaps_csv, verify_plan
 from editing import CATEGORIES, apply_day_edits, day_rows, end_time
+from geo import geocode_plan
+from map_view import CATEGORY_COLORS, CATEGORY_LABELS, build_deck
 
 ASSETS = Path(__file__).parent / "assets"
 LOGO_B64 = base64.b64encode((ASSETS / "logo.png").read_bytes()).decode()
@@ -114,6 +120,9 @@ ol.src a { color:var(--ink); }
 .banner { border:1px solid var(--warn); color:var(--warn); padding:.7rem 1rem; margin:1.5rem 0 0;
           font-family:'IBM Plex Mono',monospace; font-size:.78rem; letter-spacing:.06em; }
 .qs { font-family:'IBM Plex Mono',monospace; font-size:.78rem; color:var(--muted); }
+.legend { font-family:'IBM Plex Mono',monospace; font-size:.72rem; color:var(--muted); margin:.5rem 0 0; }
+.legend .lg { margin-right:1.1rem; white-space:nowrap; }
+.legend i { display:inline-block; width:.7rem; height:.7rem; border-radius:50%; margin-right:.35rem; vertical-align:-1px; }
 </style>
 """
 )
@@ -228,6 +237,64 @@ def day_editor(result: dict, day_index: int, day: dict, budget_limit: float) -> 
                     st.rerun()
 
 
+def send_to_mymaps(plan: dict, destination: str) -> None:
+    """Local-only: drive this Mac's signed-in Chrome to build the My Map (automation/mymaps_sync.py)."""
+    title = st.text_input("My Maps title", f"{destination} · TripPilot", key="mymaps_title")
+    if st.button("Send to Google My Maps · this Mac"):
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f:
+            f.write(to_mymaps_csv(plan, destination))
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "automation", "mymaps_sync.py")
+        with st.spinner("Chrome is building your map. Leave the window alone until it closes…"):
+            proc = subprocess.run([sys.executable, script, "--json", "import", f.name, "--title", title],
+                                  capture_output=True, text=True, timeout=600)
+        try:
+            st.session_state["mymaps_result"] = json.loads(proc.stdout.strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError):
+            st.session_state["mymaps_result"] = {"ok": False, "message": (proc.stderr or proc.stdout)[-600:]}
+    r = st.session_state.get("mymaps_result")
+    if r:
+        if r.get("ok"):
+            st.success(f"Map created: {r['placed']}/{r['rows']} places. [Open in My Maps]({r['map_url']}) · "
+                       "it also appears in the Google Maps app under Saved → Maps.")
+            if r.get("missing"):
+                st.warning("Not placed, add these by hand: " + ", ".join(r["missing"]))
+            for w in r.get("warnings", []):
+                st.caption(w)
+        else:
+            st.error(r.get("message", "Failed"))
+
+
+def render_map(result: dict, destination: str) -> None:
+    plan = result["plan"]
+    st.markdown('<h4 class="sec">Map</h4>', unsafe_allow_html=True)
+    pending = [a for d in plan["days"] for a in d.get("activities", [])
+               if a.get("lat") is None and not a.get("geo_failed")]
+    if pending:
+        bar = st.progress(0.0, text="Placing stops on the map…")
+        geocode_plan(plan, destination, progress=lambda i, n: bar.progress(i / n, text=f"Placing stops on the map… {i}/{n}"))
+        bar.empty()
+
+    options = ["All days"] + [f"Day {d.get('day')}" for d in plan["days"]]
+    choice = st.radio("Show", options, horizontal=True, label_visibility="collapsed",
+                      key=f"map_day_{st.session_state.get('plan_version', 0)}")
+    day = None if choice == "All days" else int(choice.split()[1])
+    deck = build_deck(plan, day)
+    if deck is None:
+        st.caption("None of these stops could be placed on the map.")
+    else:
+        st.pydeck_chart(deck, use_container_width=True, height=440)
+    used = {a.get("category") if a.get("category") in CATEGORY_COLORS else "other"
+            for d in plan["days"] for a in d.get("activities", [])}
+    legend = "".join(
+        f'<span class="lg"><i style="background:rgb{CATEGORY_COLORS[c]}"></i>{CATEGORY_LABELS[c]}</span>'
+        for c in CATEGORY_COLORS if c in used)
+    st.markdown(f'<div class="legend">{legend}<span class="lg">— route in visiting order</span></div>',
+                unsafe_allow_html=True)
+    missing = [a.get("place", "") for d in plan["days"] for a in d.get("activities", []) if a.get("geo_failed")]
+    if missing:
+        st.caption("Not on the map (use each stop's Google Maps link instead): " + ", ".join(missing))
+
+
 def render_result(result: dict, budget_limit: float, currency: str, destination: str) -> None:
     plan = result["plan"]
     if result["mode"] == "fallback":
@@ -266,6 +333,9 @@ def render_result(result: dict, budget_limit: float, currency: str, destination:
                 st.markdown(html, unsafe_allow_html=True)
                 day_editor(result, i, d, budget_limit)
 
+    if day_list:
+        render_map(result, destination)
+
     left, right = st.columns(2, gap="large")
     with left:
         rows = "".join(
@@ -301,6 +371,8 @@ def render_result(result: dict, budget_limit: float, currency: str, destination:
                        file_name="trippilot_plan.json", mime="application/json")
     st.download_button("Export to Google My Maps · CSV", to_mymaps_csv(plan, destination),
                        file_name="trippilot_mymaps.csv", mime="text/csv")
+    if os.getenv("TRIPPILOT_LOCAL_AUTOMATION") == "1":
+        send_to_mymaps(plan, destination)
     with st.expander("How to add these places to Google Maps"):
         st.markdown(
             "1. Open **mymaps.google.com** → *Create a new map*\n"

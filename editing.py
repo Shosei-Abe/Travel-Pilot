@@ -85,6 +85,8 @@ def apply_day_edits(plan: dict, day_index: int, rows: list[dict]) -> tuple[dict,
         if changed_place:
             # The old citation described a different place; never carry it over.
             a.update(source_url=None, unverified=True, opening_hours=None, cost_verified=False)
+            for k in ("lat", "lng", "geo_failed"):
+                a.pop(k, None)  # re-geocode the new place
         if orig is None or changed_place or _editable(a) != _editable(orig):
             a["user_edited"] = True
         new_acts.append(a)

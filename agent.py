@@ -226,12 +226,14 @@ def to_mymaps_csv(plan: dict, destination: str) -> str:
 
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["Name", "Category", "Day", "Time", "Address", "Description", "Source", "Google Maps"])
+    w.writerow(["Name", "Category", "Day", "Time", "Address", "Latitude", "Longitude",
+                "Description", "Source", "Google Maps"])
     for d in plan.get("days", []):
         for a in d.get("activities", []):
             place = a.get("place", "")
             w.writerow([place, a.get("category", "other"), f"Day {d.get('day')}", a.get("time", ""),
-                        f"{place}, {destination}", a.get("description", ""), a.get("source_url") or "",
+                        f"{place}, {destination}", a.get("lat", ""), a.get("lng", ""),
+                        a.get("description", ""), a.get("source_url") or "",
                         maps_url(place, destination)])
     return buf.getvalue()
 

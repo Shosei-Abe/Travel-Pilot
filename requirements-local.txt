@@ -1,0 +1,4 @@
+# Extra packages for running TripPilot on your own Mac with Google My Maps automation.
+-r requirements.txt
+playwright>=1.48
+mcp>=1.2
