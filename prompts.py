@@ -28,6 +28,7 @@ Submit the itinerary by calling the submit_itinerary tool exactly once, with an 
         {
           "time": "HH:MM",
           "place": string,
+          "category": "food" | "cafe" | "sightseeing" | "nature" | "shopping" | "nightlife" | "other",
           "description": string,          // why it fits the user's interests
           "duration_minutes": integer,
           "estimated_cost": number | null, // in the user's currency
@@ -91,6 +92,7 @@ _ACTIVITY = {
     "properties": {
         "time": {"type": "string"},
         "place": {"type": "string"},
+        "category": {"type": "string", "enum": ["food", "cafe", "sightseeing", "nature", "shopping", "nightlife", "other"]},
         "description": {"type": "string"},
         "duration_minutes": {"type": "integer"},
         "estimated_cost": {"type": ["number", "null"]},
@@ -99,7 +101,7 @@ _ACTIVITY = {
         "source_url": {"type": ["string", "null"]},
         "unverified": {"type": "boolean"},
     },
-    "required": ["time", "place", "description", "source_url", "unverified"],
+    "required": ["time", "place", "category", "description", "source_url", "unverified"],
 }
 
 ITINERARY_TOOL = {
@@ -145,3 +147,41 @@ ITINERARY_TOOL = {
         "required": ["destination", "summary", "days", "budget"],
     },
 }
+
+
+SEARCH_TOOL = {
+    "name": "search_web",
+    "description": "Search the web (Tavily) for current information, e.g. alternative restaurants or attractions.",
+    "input_schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string", "description": "One focused search query"}},
+        "required": ["query"],
+    },
+}
+
+EDIT_SYSTEM_PROMPT = SYSTEM_PROMPT + """
+
+You are now EDITING an existing itinerary in a conversation with the traveller.
+- Change only what the user asks for. Keep every other activity exactly as it is, including its source_url.
+- If the change needs new places or facts, call search_web first (1-2 focused queries).
+- New or changed activities must cite a URL from the search results you have been given.
+- Re-check timing, proximity and the budget after the change.
+- Finish by calling submit_itinerary with the FULL updated itinerary, and in the same reply write
+  1-2 sentences telling the user what you changed. Write that message in the user's language.
+- Keep the itinerary's existing language unless the user asks otherwise."""
+
+
+def format_results(results: list[dict], start: int = 1) -> str:
+    return "\n".join(
+        f"[{i}] {r['title']}\nURL: {r['url']}\n{r['content']}\n" for i, r in enumerate(results, start)
+    )
+
+
+def build_edit_prompt(plan: dict, sources: list[dict], instruction: str) -> str:
+    import json
+    clean = {k: v for k, v in plan.items() if k != "verification"}
+    return (
+        "## Current itinerary\n" + json.dumps(clean, ensure_ascii=False) +
+        "\n\n## Sources already retrieved\n" + format_results(sources) +
+        "\n## Traveller's request\n" + instruction
+    )

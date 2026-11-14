@@ -8,7 +8,10 @@ from typing import Callable
 
 from dotenv import load_dotenv
 
-from prompts import CONCISE_NOTE, ITINERARY_TOOL, SYSTEM_PROMPT, build_user_prompt
+from urllib.parse import quote_plus
+
+from prompts import (CONCISE_NOTE, EDIT_SYSTEM_PROMPT, ITINERARY_TOOL, SEARCH_TOOL, SYSTEM_PROMPT,
+                     build_edit_prompt, build_user_prompt, format_results)
 from search import build_queries, run_searches
 
 load_dotenv()
@@ -38,7 +41,8 @@ def parse_json(text: str) -> dict:
         return json.loads(text[start : end + 1])
 
 
-def _call_claude(user_prompt: str):
+def _call_claude(user_prompt, system: str = SYSTEM_PROMPT, tools: list | None = None):
+    """user_prompt is a string, or a full messages list for multi-turn agent loops."""
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
@@ -48,9 +52,9 @@ def _call_claude(user_prompt: str):
     return client.messages.create(
         model=MODEL,
         max_tokens=8000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
-        tools=[ITINERARY_TOOL],
+        system=system,
+        messages=user_prompt if isinstance(user_prompt, list) else [{"role": "user", "content": user_prompt}],
+        tools=tools or [ITINERARY_TOOL],
     )
 
 
@@ -69,7 +73,7 @@ def _extract_plan(response) -> dict:
 
 
 def generate_plan(user_prompt: str) -> dict:
-    """Structured output via forced tool use. One retry, asking for a shorter plan."""
+    """Structured output via the submit_itinerary tool. One retry, asking for a shorter plan."""
     last_error = None
     for attempt in range(2):
         prompt = user_prompt if attempt == 0 else user_prompt + CONCISE_NOTE
@@ -163,6 +167,73 @@ def plan_trip(
     plan = verify_plan(plan, results, budget)
     return {"mode": "live", "plan": plan, "sources": results,
             "queries": queries, "warnings": warnings}
+
+
+# ---------- Conversational editing ----------
+
+def edit_plan(result: dict, instruction: str, destination: str, budget: float,
+              progress: Progress = _noop, max_steps: int = 4) -> dict:
+    """Agent loop: Claude may call search_web, then must call submit_itinerary.
+    Returns a new result dict plus "reply" (Claude's message to the user)."""
+    sources = list(result["sources"])
+    queries = list(result["queries"])
+    messages = [{"role": "user", "content": build_edit_prompt(result["plan"], sources, instruction)}]
+
+    for _ in range(max_steps):
+        progress("plan", "Claude is reading your request")
+        response = _call_claude(messages, system=EDIT_SYSTEM_PROMPT, tools=[SEARCH_TOOL, ITINERARY_TOOL])
+        tool_results, new_plan = [], None
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
+            if block.name == "submit_itinerary" and isinstance(block.input, dict) and block.input.get("days"):
+                new_plan = block.input
+            elif block.name == "search_web":
+                query = str(block.input.get("query", ""))[:200]
+                progress("search", f"Searching: {query}")
+                queries.append(query)
+                try:
+                    found, _ = run_searches([query])
+                    content = format_results(found)
+                except Exception as e:
+                    found, content = [], f"Search failed: {e}"
+                known = {s["url"] for s in sources}
+                sources += [r for r in found if r["url"] not in known]
+                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
+
+        if new_plan:
+            progress("verify", "Checking every citation against retrieved sources")
+            reply = " ".join(getattr(b, "text", "") for b in response.content if b.type == "text").strip()
+            return {"mode": "live", "plan": verify_plan(new_plan, sources, budget), "sources": sources,
+                    "queries": queries, "warnings": [], "reply": reply or "Updated the itinerary."}
+        if not tool_results:
+            raise RuntimeError(f"Edit failed (stop_reason={response.stop_reason})")
+        messages += [{"role": "assistant", "content": response.content},
+                     {"role": "user", "content": tool_results}]
+    raise RuntimeError("Edit failed: too many steps")
+
+
+# ---------- Google My Maps export ----------
+
+def maps_url(place: str, destination: str) -> str:
+    return "https://www.google.com/maps/search/?api=1&query=" + quote_plus(f"{place}, {destination}")
+
+
+def to_mymaps_csv(plan: dict, destination: str) -> str:
+    """CSV for Google My Maps import: location column = Address, style by Category."""
+    import csv
+    import io
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Name", "Category", "Day", "Time", "Address", "Description", "Source", "Google Maps"])
+    for d in plan.get("days", []):
+        for a in d.get("activities", []):
+            place = a.get("place", "")
+            w.writerow([place, a.get("category", "other"), f"Day {d.get('day')}", a.get("time", ""),
+                        f"{place}, {destination}", a.get("description", ""), a.get("source_url") or "",
+                        maps_url(place, destination)])
+    return buf.getvalue()
 
 
 if __name__ == "__main__":

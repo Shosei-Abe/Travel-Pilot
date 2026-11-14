@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import streamlit as st
 from PIL import Image
 
-from agent import plan_trip
+from agent import edit_plan, maps_url, plan_trip, to_mymaps_csv
 
 ASSETS = Path(__file__).parent / "assets"
 LOGO_B64 = base64.b64encode((ASSETS / "logo.png").read_bytes()).decode()
@@ -86,6 +86,9 @@ span[data-baseweb="tag"] span { color:var(--ink) !important; }
                     background:var(--paper); border:1px solid var(--ink); transform:rotate(45deg); }
 .stop .body { padding:0 0 1.5rem .6rem; }
 .stop .place { font-size:1.25rem; font-weight:500; }
+.stop .cat { font-family:'IBM Plex Mono',monospace; font-size:.66rem; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+[data-testid="stChatMessage"] { background:transparent; }
+[data-testid="stChatMessageAvatarUser"] { background:var(--ink) !important; color:var(--paper) !important; border-radius:0 !important; }
 .stop .desc { margin:.2rem 0 .45rem; color:#3b3832; line-height:1.5; }
 .meta { font-family:'IBM Plex Mono',monospace; font-size:.7rem; letter-spacing:.06em; color:var(--muted); }
 .meta span { margin-right:1.1rem; }
@@ -149,7 +152,11 @@ def money(x) -> str:
     return f"{x:,.0f}"
 
 
-def stop_html(a: dict) -> str:
+CATEGORY_MARK = {"food": "● Food", "cafe": "◐ Café", "sightseeing": "◆ Sight", "nature": "▲ Nature",
+                 "shopping": "■ Shop", "nightlife": "★ Night", "other": "○ Other"}
+
+
+def stop_html(a: dict, destination: str) -> str:
     meta = []
     url = a.get("source_url")
     if url:
@@ -167,15 +174,17 @@ def stop_html(a: dict) -> str:
         meta.append(f"<span>≈ {money(cost)} · estimate</span>")
     if a.get("opening_hours"):
         meta.append(f'<span class="ok">Hours {escape(str(a["opening_hours"]))}</span>')
+    meta.append(f'<span><a href="{escape(maps_url(a.get("place", ""), destination))}" target="_blank">Google Maps ↗</a></span>')
+    cat = CATEGORY_MARK.get(a.get("category", "other"), CATEGORY_MARK["other"])
     return (
         f'<div class="stop"><div class="t">{escape(str(a.get("time", "")))}</div><div class="axis"></div>'
-        f'<div class="body"><div class="place">{escape(str(a.get("place", "")))}</div>'
+        f'<div class="body"><div class="cat">{cat}</div><div class="place">{escape(str(a.get("place", "")))}</div>'
         f'<div class="desc">{escape(str(a.get("description", "")))}</div>'
         f'<div class="meta">{"".join(meta)}</div></div></div>'
     )
 
 
-def render_result(result: dict, budget_limit: float, currency: str) -> None:
+def render_result(result: dict, budget_limit: float, currency: str, destination: str) -> None:
     plan = result["plan"]
     if result["mode"] == "fallback":
         st.markdown('<div class="banner">DEMO DATA — NOT LIVE SEARCH. The live pipeline failed, so a sample plan is shown.</div>',
@@ -209,7 +218,7 @@ def render_result(result: dict, budget_limit: float, currency: str) -> None:
         for tab, d in zip(tabs, day_list):
             with tab:
                 html = f'<div class="theme">{escape(d.get("theme", ""))}</div>' if d.get("theme") else ""
-                html += "".join(stop_html(a) for a in d.get("activities", []))
+                html += "".join(stop_html(a, destination) for a in d.get("activities", []))
                 st.markdown(html, unsafe_allow_html=True)
 
     left, right = st.columns(2, gap="large")
@@ -245,6 +254,16 @@ def render_result(result: dict, budget_limit: float, currency: str) -> None:
     st.write("")
     st.download_button("Download plan · JSON", json.dumps(plan, ensure_ascii=False, indent=2),
                        file_name="trippilot_plan.json", mime="application/json")
+    st.download_button("Export to Google My Maps · CSV", to_mymaps_csv(plan, destination),
+                       file_name="trippilot_mymaps.csv", mime="text/csv")
+    with st.expander("How to add these places to Google Maps"):
+        st.markdown(
+            "1. Open **mymaps.google.com** → *Create a new map*\n"
+            "2. In the layer, click **Import** and choose `trippilot_mymaps.csv`\n"
+            "3. Location column: **Address** · Title column: **Name**\n"
+            "4. Click *Uniform style* → **Style by data column: Category** to give each category its own colour and icon\n"
+            "5. The map then appears in the Google Maps app under **Saved → Maps**"
+        )
 
 
 # ---------- Run ----------
@@ -268,6 +287,36 @@ if submitted:
     st.session_state["result"] = result
     st.session_state["budget"] = float(budget)
     st.session_state["currency"] = currency
+    st.session_state["destination"] = destination
+    st.session_state["chat"] = []
 
 if "result" in st.session_state:
-    render_result(st.session_state["result"], st.session_state["budget"], st.session_state["currency"])
+    render_result(st.session_state["result"], st.session_state["budget"],
+                  st.session_state["currency"], st.session_state["destination"])
+
+    st.markdown('<h4 class="sec">Refine with the agent</h4>', unsafe_allow_html=True)
+    if st.session_state["result"]["mode"] != "live":
+        st.caption("Editing needs a live plan.")
+    else:
+        for msg in st.session_state["chat"]:
+            avatar = str(ASSETS / "logo.png") if msg["role"] == "assistant" else ":material/person:"
+            with st.chat_message(msg["role"], avatar=avatar):
+                st.write(msg["content"])
+        request = st.chat_input("e.g. Swap the Day 1 lunch for a ramen place / 2日目の午後をカフェ巡りに変えて")
+        if request:
+            st.session_state["chat"].append({"role": "user", "content": request})
+            with st.status("Updating the plan…", expanded=True) as status:
+                def progress(step: str, msg: str) -> None:
+                    st.markdown(f'<span class="label">{escape(step)}</span>&nbsp; {escape(msg)}',
+                                unsafe_allow_html=True)
+                try:
+                    new = edit_plan(st.session_state["result"], request, st.session_state["destination"],
+                                    st.session_state["budget"], progress=progress)
+                    st.session_state["result"] = new
+                    st.session_state["chat"].append({"role": "assistant", "content": new["reply"]})
+                    status.update(label="Plan updated", state="complete")
+                except Exception as e:
+                    st.session_state["chat"].append(
+                        {"role": "assistant", "content": f"Sorry, I couldn't apply that change ({e}). The plan is unchanged."})
+                    status.update(label="Edit failed", state="error")
+            st.rerun()
