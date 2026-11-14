@@ -16,6 +16,7 @@ from PIL import Image
 from agent import edit_plan, maps_url, plan_trip, to_mymaps_csv, verify_plan
 from editing import CATEGORIES, apply_day_edits, day_rows, end_time
 from geo import geocode_plan
+from pdf_export import build_pdf
 from map_view import CATEGORY_COLORS, CATEGORY_LABELS, build_deck
 
 ASSETS = Path(__file__).parent / "assets"
@@ -176,6 +177,11 @@ def stop_html(a: dict, destination: str) -> str:
         meta.append(f'<span class="ok">✓ Sourced — <a href="{escape(url)}" target="_blank">{escape(domain(url))} ↗</a></span>')
     else:
         meta.append('<span class="bad">Unverified — check before going</span>')
+    if a.get("official_url") and a.get("official_url") != url:
+        meta.insert(1, f'<span class="ok">◆ Official — <a href="{escape(a["official_url"])}" target="_blank">'
+                       f'{escape(domain(a["official_url"]))} ↗</a></span>')
+    elif a.get("official_url"):
+        meta[0] = meta[0].replace("✓ Sourced", "◆ Official")
     if a.get("user_edited"):
         meta.insert(0, '<span class="edit">✎ Edited by you</span>')
     if a.get("duration_minutes"):
@@ -316,9 +322,9 @@ def render_result(result: dict, budget_limit: float, currency: str, destination:
         f"""<div class="ledger">
 <div><div class="label">Estimated spend</div><div class="v">{money(total)}</div><div class="n">{escape(cur)}</div></div>
 <div><div class="label">Budget</div><div class="v">{money(budget_limit)}</div>{diff_html}</div>
-<div><div class="label">Sources read</div><div class="v">{len(result["sources"])}</div><div class="n">via Tavily</div></div>
+<div><div class="label">Sources read</div><div class="v">{len(result["sources"])}</div><div class="n">{sum(1 for s in result["sources"] if s.get("kind") == "official")} official · via Tavily</div></div>
 <div><div class="label">Stops sourced</div><div class="v">{v.get("grounded", 0)}/{v.get("activities", 0)}</div>
-<div class="n">{v.get("removed_sources", 0)} citation(s) rejected</div></div>
+<div class="n">{v.get("official", 0)} with official page · {v.get("removed_sources", 0)} rejected</div></div>
 </div>""",
         unsafe_allow_html=True,
     )
@@ -358,7 +364,7 @@ def render_result(result: dict, budget_limit: float, currency: str, destination:
     if result["sources"]:
         items = "".join(
             f'<li><a href="{escape(s["url"])}" target="_blank">{escape(s["title"])}</a>'
-            f'<span class="d">{escape(domain(s["url"]))}</span></li>'
+            f'<span class="d">{"◆ official · " if s.get("kind") == "official" else ""}{escape(domain(s["url"]))}</span></li>'
             for s in result["sources"]
         )
         st.markdown(f'<h4 class="sec">Sources · {len(result["sources"])}</h4><ol class="src">{items}</ol>',
@@ -367,8 +373,9 @@ def render_result(result: dict, budget_limit: float, currency: str, destination:
     st.markdown(f'<h4 class="sec">Queries the agent ran</h4><div class="qs">{qs}</div>', unsafe_allow_html=True)
 
     st.write("")
-    st.download_button("Download plan · JSON", json.dumps(plan, ensure_ascii=False, indent=2),
-                       file_name="trippilot_plan.json", mime="application/json")
+    st.download_button("Download plan · PDF", build_pdf(result, destination, budget_limit, currency),
+                       file_name=f"trippilot_{destination.split(',')[0].strip().lower().replace(' ', '_')}.pdf",
+                       mime="application/pdf")
     st.download_button("Export to Google My Maps · CSV", to_mymaps_csv(plan, destination),
                        file_name="trippilot_mymaps.csv", mime="text/csv")
     if os.getenv("TRIPPILOT_LOCAL_AUTOMATION") == "1":

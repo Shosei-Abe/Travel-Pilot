@@ -12,7 +12,7 @@ from urllib.parse import quote_plus
 
 from prompts import (CONCISE_NOTE, EDIT_SYSTEM_PROMPT, ITINERARY_TOOL, SEARCH_TOOL, SYSTEM_PROMPT,
                      build_edit_prompt, build_user_prompt, format_results)
-from search import build_queries, get_secret, run_searches
+from search import build_queries, find_official_pages, get_secret, run_searches, source_kind
 
 load_dotenv()
 
@@ -85,12 +85,42 @@ def generate_plan(user_prompt: str) -> dict:
     raise last_error
 
 
+# ---------- Official sources ----------
+
+def attach_official_sources(plan: dict, sources: list[dict], destination: str, progress: Progress = _noop) -> None:
+    """Give every stop an official page when one exists (venue site, city, tourism board).
+    The original citation stays; the official page is added as `official_url`."""
+    kind = {s["url"]: s.get("kind") or source_kind(s["url"], s.get("title", "")) for s in sources}
+    todo = []
+    for d in plan.get("days", []):
+        for a in d.get("activities", []):
+            if a.get("official_checked"):
+                continue
+            a["official_checked"] = True
+            if a.get("source_url") and kind.get(a["source_url"]) == "official":
+                a["official_url"] = a["source_url"]
+            elif a.get("place"):
+                todo.append(a)
+    if not todo:
+        return
+    progress("verify", f"Looking for official pages for {len(todo)} stop(s)")
+    found = find_official_pages(sorted({a["place"] for a in todo}), destination)
+    known = {s["url"] for s in sources}
+    for a in todo:
+        hit = found.get(a["place"])
+        if hit:
+            a["official_url"] = hit["url"]
+            if hit["url"] not in known:
+                sources.append(hit)
+                known.add(hit["url"])
+
+
 # ---------- Verification ----------
 
 def verify_plan(plan: dict, results: list[dict], budget: float) -> dict:
     """Enforce grounding rules in code, not just in the prompt."""
     allowed = {r["url"] for r in results}
-    stats = {"activities": 0, "grounded": 0, "removed_sources": 0, "unverified": 0}
+    stats = {"activities": 0, "grounded": 0, "removed_sources": 0, "unverified": 0, "official": 0}
 
     for day in plan.get("days", []):
         for act in day.get("activities", []):
@@ -106,6 +136,10 @@ def verify_plan(plan: dict, results: list[dict], budget: float) -> dict:
                 act["unverified"] = True
             if not act.get("cost_verified"):
                 act["cost_verified"] = False
+            if act.get("official_url") and act["official_url"] not in allowed:
+                act.pop("official_url")
+            if act.get("official_url"):
+                stats["official"] += 1
             if act.get("unverified"):
                 stats["unverified"] += 1
 
@@ -163,6 +197,10 @@ def plan_trip(
         return {"mode": "fallback", "plan": load_fallback(), "sources": results,
                 "queries": queries, "warnings": warnings}
 
+    try:
+        attach_official_sources(plan, results, destination, progress)
+    except Exception as e:  # nice-to-have: never lose the plan over it
+        warnings.append(f"Official-site lookup skipped: {e}")
     progress("verify", "Checking every citation against retrieved sources")
     plan = verify_plan(plan, results, budget)
     return {"mode": "live", "plan": plan, "sources": results,
@@ -202,6 +240,10 @@ def edit_plan(result: dict, instruction: str, destination: str, budget: float,
                 tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
 
         if new_plan:
+            try:
+                attach_official_sources(new_plan, sources, destination, progress)
+            except Exception:
+                pass
             progress("verify", "Checking every citation against retrieved sources")
             reply = " ".join(getattr(b, "text", "") for b in response.content if b.type == "text").strip()
             return {"mode": "live", "plan": verify_plan(new_plan, sources, budget), "sources": sources,

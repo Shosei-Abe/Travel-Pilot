@@ -11,6 +11,8 @@ Rules:
 4. Recommend only places that appear in the search results.
 5. Never invent opening hours, prices, or addresses. If a price or hour is not stated
    in the sources, set the value to null and mark it unverified.
+5b. Sources marked [OFFICIAL] are government, tourism-board or the venue's own site. Prefer them:
+   when an official source covers a place, cite it, and take hours and prices from it over blogs.
 6. Every activity must cite a source by copying a URL exactly from the search results.
    If no source supports it, set "source_url": null and "unverified": true.
 7. Meals and transport may be rough estimates, but mark them "cost_verified": false.
@@ -71,7 +73,8 @@ def build_user_prompt(
         "## Search results",
     ]
     for i, r in enumerate(results, 1):
-        lines.append(f"[{i}] {r['title']}\nURL: {r['url']}\n{r['content']}\n")
+        tag = " [OFFICIAL]" if r.get("kind") == "official" else ""
+        lines.append(f"[{i}]{tag} {r['title']}\nURL: {r['url']}\n{r['content']}\n")
     lines.append(f"Plan exactly {days} day(s). Submit it with the submit_itinerary tool.")
     return "\n".join(lines)
 
@@ -173,7 +176,8 @@ You are now EDITING an existing itinerary in a conversation with the traveller.
 
 def format_results(results: list[dict], start: int = 1) -> str:
     return "\n".join(
-        f"[{i}] {r['title']}\nURL: {r['url']}\n{r['content']}\n" for i, r in enumerate(results, start)
+        f"[{i}]{' [OFFICIAL]' if r.get('kind') == 'official' else ''} {r['title']}\nURL: {r['url']}\n{r['content']}\n"
+        for i, r in enumerate(results, start)
     )
 
 
