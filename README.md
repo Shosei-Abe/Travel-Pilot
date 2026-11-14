@@ -27,3 +27,6 @@ python agent.py    # full pipeline, prints JSON
 | agent.py | Pipeline, JSON parsing/repair, citation verification, fallback |
 | search.py | Tavily queries |
 | prompts.py | Claude prompts and output schema |
+
+Use below link to use csv to add book mark directly into your google map!
+https://www.google.com/maps/d/u/0/
