@@ -12,7 +12,7 @@ from urllib.parse import quote_plus
 
 from prompts import (CONCISE_NOTE, EDIT_SYSTEM_PROMPT, ITINERARY_TOOL, SEARCH_TOOL, SYSTEM_PROMPT,
                      build_edit_prompt, build_user_prompt, format_results)
-from search import build_queries, run_searches
+from search import build_queries, get_secret, run_searches
 
 load_dotenv()
 
@@ -43,7 +43,7 @@ def parse_json(text: str) -> dict:
 
 def _call_claude(user_prompt, system: str = SYSTEM_PROMPT, tools: list | None = None):
     """user_prompt is a string, or a full messages list for multi-turn agent loops."""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    api_key = get_secret("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
     import anthropic

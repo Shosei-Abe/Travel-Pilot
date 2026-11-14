@@ -9,7 +9,8 @@ from urllib.parse import urlparse
 import streamlit as st
 from PIL import Image
 
-from agent import edit_plan, maps_url, plan_trip, to_mymaps_csv
+from agent import edit_plan, maps_url, plan_trip, to_mymaps_csv, verify_plan
+from editing import CATEGORIES, apply_day_edits, day_rows, end_time
 
 ASSETS = Path(__file__).parent / "assets"
 LOGO_B64 = base64.b64encode((ASSETS / "logo.png").read_bytes()).decode()
@@ -52,6 +53,7 @@ span[data-baseweb="tag"] span { color:var(--ink) !important; }
   background:var(--ink) !important; color:var(--paper) !important; border-radius:0 !important; border:none;
   font-family:'IBM Plex Mono',monospace !important; letter-spacing:.16em; text-transform:uppercase; padding:.7rem 0; }
 [data-testid="stFormSubmitButton"] button p, .stDownloadButton button p { font-family:'IBM Plex Mono',monospace !important; font-size:.8rem; }
+[data-testid="stExpander"] [data-testid="stFormSubmitButton"] button { padding:.55rem 1.4rem; }
 .stDownloadButton button { background:transparent !important; color:var(--ink) !important; border:1px solid var(--ink) !important; padding:.5rem 1.2rem; }
 
 /* status box */
@@ -80,6 +82,8 @@ span[data-baseweb="tag"] span { color:var(--ink) !important; }
 /* itinerary */
 .stop { display:grid; grid-template-columns:4.2rem 1.4rem 1fr; }
 .stop .t { font-family:'IBM Plex Mono',monospace; font-size:.9rem; padding-top:.22rem; }
+.stop .t-end { font-size:.75rem; color:var(--muted); margin-top:.15rem; }
+.meta .edit { color:var(--ink); font-style:italic; }
 .stop .axis { position:relative; }
 .stop .axis:before { content:""; position:absolute; left:50%; top:0; bottom:0; border-left:1px solid var(--faint); }
 .stop .axis:after { content:""; position:absolute; left:calc(50% - 4px); top:.55rem; width:7px; height:7px;
@@ -163,6 +167,8 @@ def stop_html(a: dict, destination: str) -> str:
         meta.append(f'<span class="ok">✓ Sourced — <a href="{escape(url)}" target="_blank">{escape(domain(url))} ↗</a></span>')
     else:
         meta.append('<span class="bad">Unverified — check before going</span>')
+    if a.get("user_edited"):
+        meta.insert(0, '<span class="edit">✎ Edited by you</span>')
     if a.get("duration_minutes"):
         meta.append(f'<span>{a["duration_minutes"]} min</span>')
     cost = a.get("estimated_cost")
@@ -177,11 +183,49 @@ def stop_html(a: dict, destination: str) -> str:
     meta.append(f'<span><a href="{escape(maps_url(a.get("place", ""), destination))}" target="_blank">Google Maps ↗</a></span>')
     cat = CATEGORY_MARK.get(a.get("category", "other"), CATEGORY_MARK["other"])
     return (
-        f'<div class="stop"><div class="t">{escape(str(a.get("time", "")))}</div><div class="axis"></div>'
+        f'<div class="stop"><div class="t">{escape(str(a.get("time", "")))}'
+        f'<div class="t-end">{"– " + end_time(a) if end_time(a) else ""}</div></div><div class="axis"></div>'
         f'<div class="body"><div class="cat">{cat}</div><div class="place">{escape(str(a.get("place", "")))}</div>'
         f'<div class="desc">{escape(str(a.get("description", "")))}</div>'
         f'<div class="meta">{"".join(meta)}</div></div></div>'
     )
+
+
+def day_editor(result: dict, day_index: int, day: dict, budget_limit: float) -> None:
+    """Spreadsheet-style manual editing of one day's stops."""
+    if result["mode"] != "live":
+        return
+    with st.expander("Edit this day: times, places, costs"):
+        st.caption("Change start/end (HH:MM), swap a place, add a row or clear a place to remove it. "
+                   "A place you type yourself is shown as unverified until the agent finds a source for it.")
+        version = st.session_state.get("plan_version", 0)
+        with st.form(f"edit_form_{day_index}_{version}", border=False):
+            edited = st.data_editor(
+                day_rows(day), num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=f"editor_{day_index}_{version}",
+                column_config={
+                    "id": None,
+                    "Start": st.column_config.TextColumn("Start", width="small", help="HH:MM"),
+                    "End": st.column_config.TextColumn("End", width="small", help="HH:MM"),
+                    "Place": st.column_config.TextColumn("Place", width="medium"),
+                    "Category": st.column_config.SelectboxColumn("Category", options=CATEGORIES, width="small"),
+                    "Cost": st.column_config.NumberColumn("Cost", min_value=0, step=100, format="%d"),
+                    "Note": st.column_config.TextColumn("Note", width="large"),
+                },
+            )
+            if st.form_submit_button("Apply changes"):
+                rows = edited.to_dict("records") if hasattr(edited, "to_dict") else edited
+                new_plan, errors = apply_day_edits(result["plan"], day_index, rows)
+                if errors:
+                    for e in errors:
+                        st.error(e)
+                else:
+                    removed = result["plan"].get("verification", {}).get("removed_sources", 0)
+                    new_plan = verify_plan(new_plan, result["sources"], budget_limit)
+                    new_plan["verification"]["removed_sources"] = removed
+                    st.session_state["result"] = {**result, "plan": new_plan}
+                    st.session_state["plan_version"] = version + 1
+                    st.rerun()
 
 
 def render_result(result: dict, budget_limit: float, currency: str, destination: str) -> None:
@@ -215,11 +259,12 @@ def render_result(result: dict, budget_limit: float, currency: str, destination:
     day_list = plan.get("days", [])
     if day_list:
         tabs = st.tabs([f"Day {d.get('day', i + 1)}" for i, d in enumerate(day_list)])
-        for tab, d in zip(tabs, day_list):
+        for i, (tab, d) in enumerate(zip(tabs, day_list)):
             with tab:
                 html = f'<div class="theme">{escape(d.get("theme", ""))}</div>' if d.get("theme") else ""
                 html += "".join(stop_html(a, destination) for a in d.get("activities", []))
                 st.markdown(html, unsafe_allow_html=True)
+                day_editor(result, i, d, budget_limit)
 
     left, right = st.columns(2, gap="large")
     with left:
@@ -289,6 +334,7 @@ if submitted:
     st.session_state["currency"] = currency
     st.session_state["destination"] = destination
     st.session_state["chat"] = []
+    st.session_state["plan_version"] = st.session_state.get("plan_version", 0) + 1
 
 if "result" in st.session_state:
     render_result(st.session_state["result"], st.session_state["budget"],
@@ -313,6 +359,7 @@ if "result" in st.session_state:
                     new = edit_plan(st.session_state["result"], request, st.session_state["destination"],
                                     st.session_state["budget"], progress=progress)
                     st.session_state["result"] = new
+                    st.session_state["plan_version"] = st.session_state.get("plan_version", 0) + 1
                     st.session_state["chat"].append({"role": "assistant", "content": new["reply"]})
                     status.update(label="Plan updated", state="complete")
                 except Exception as e:

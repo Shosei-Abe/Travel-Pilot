@@ -7,6 +7,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def get_secret(name: str):
+    """Env var / .env locally; falls back to st.secrets on Streamlit Cloud."""
+    value = os.getenv(name)
+    if value:
+        return value.strip()
+    try:
+        import streamlit as st
+        value = st.secrets.get(name)
+        return str(value).strip() if value else None
+    except Exception:
+        return None
+
 MAX_RESULTS_PER_QUERY = 5
 MAX_CONTENT_CHARS = 1200  # keep the LLM context small and fast
 # Social posts are weak evidence; keep sources to articles and official sites.
@@ -52,7 +65,7 @@ def _search_one(client, query: str) -> list[dict]:
 
 def run_searches(queries: list[str]) -> tuple[list[dict], list[str]]:
     """Run all queries in parallel. Returns (deduplicated results, error messages)."""
-    api_key = os.getenv("TAVILY_API_KEY")
+    api_key = get_secret("TAVILY_API_KEY")
     if not api_key:
         raise RuntimeError("TAVILY_API_KEY is not set")
 
